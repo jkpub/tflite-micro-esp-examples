@@ -1,4 +1,5 @@
 stages:
+  - pre-check
   - build
   - sync
   - deploy
@@ -15,6 +16,36 @@ variables:
   SYNC_BRANCH_NAME: "ci/sync_gh_tflite-micro"
   SYNC_COMMIT_MSG: "tflite-micro-sync: Update esp-tflite-micro (synced from github)"
   REPO_URL: "https://${PUSH_TO_GITLAB_TOKEN_NAME}:${PUSH_TO_GITLAB_TOKEN}@gitlab.espressif.cn:6688/app-frameworks/tflite-micro-esp-examples.git"
+
+pre-commit-mr:
+  stage: pre-check
+  image: "$CI_DOCKER_REGISTRY/pre-commit-codecheck:1"
+  allow_failure: true
+  before_script:
+    - echo "Skip common before script"
+  script:
+    - echo "Merge request is from ${CI_COMMIT_REF_NAME} into ${CI_MERGE_REQUEST_TARGET_BRANCH_NAME}"
+    - git fetch origin ${CI_MERGE_REQUEST_TARGET_BRANCH_NAME} ${CI_COMMIT_REF_NAME}
+    - export from_sha=$(git merge-base HEAD origin/${CI_MERGE_REQUEST_TARGET_BRANCH_NAME})
+    - echo "Checking changes from ${from_sha} to ${CI_COMMIT_SHA}:"
+    - git log --oneline ${from_sha}..${CI_COMMIT_SHA}
+    - echo "Modified files:"
+    - git diff-tree --no-commit-id --name-only -r ${from_sha} ${CI_COMMIT_SHA}
+    - echo "Running pre-commit:"
+    - pre-commit run --from ${from_sha} --to ${CI_COMMIT_SHA}
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+  tags: [build, internet]
+
+include:
+  - project: espressif/shared-ci-dangerjs
+    ref: master
+    file: danger.yaml
+run-danger-mr-linter:
+  before_script:
+    - echo "Skip common before script"
+  stage: pre-check
+  tags: [build, internet]
 
 before_script:
     - mkdir -p ~/.ssh
@@ -49,6 +80,12 @@ before_script:
     - *test_build
     - cd ${CI_PROJECT_DIR}
 
+build_idf_v5.3:
+  extends: .build_template
+  image: espressif/idf:release-v5.3
+  variables:
+    EXAMPLE_TARGETS: esp32 esp32s2 esp32s3 esp32c3 esp32c2
+
 build_idf_v5.1:
   extends: .build_template
   image: espressif/idf:release-v5.1
@@ -58,30 +95,14 @@ build_idf_v5.1:
 build_idf_v5.0:
   extends: .build_template
   image: espressif/idf:release-v5.0
-  needs: [build_idf_v5.1]
   variables:
     EXAMPLE_TARGETS: esp32 esp32s3 esp32c3 esp32c2
 
 build_idf_v4.4:
   extends: .build_template
   image: espressif/idf:release-v4.4
-  needs: [build_idf_v5.0]
   variables:
     EXAMPLE_TARGETS: esp32 esp32s3 esp32c3
-
-build_idf_v4.3:
-  extends: .build_template
-  image: espressif/idf:release-v4.3
-  needs: [build_idf_v4.4]
-  variables:
-    EXAMPLE_TARGETS: esp32
-
-build_idf_v4.2:
-  extends: .build_template
-  image: espressif/idf:release-v4.2
-  needs: [build_idf_v4.3]
-  variables:
-    EXAMPLE_TARGETS: esp32
 
 .push_to_gitlab: &push_to_gitlab
     # Push updated repo (synced from github) to gitlab
@@ -92,7 +113,7 @@ build_idf_v4.2:
     - git ls-remote --exit-code --heads ${REPO_URL} ${SYNC_BRANCH_NAME} && echo "ERROR - ${SYNC_BRANCH_NAME} branch already exists. Is there any open MR ?" && exit 1
     - git branch ${SYNC_BRANCH_NAME} 2>&1 || echo "Branch exists" && git branch -D ${SYNC_BRANCH_NAME} 2>&1 || echo "Branch deleted" && git branch ${SYNC_BRANCH_NAME} 2>&1 && echo "Branch created"
     - git checkout ${SYNC_BRANCH_NAME}
-    - git add components/esp-tflite-micro
+    - git add .
     - git commit -m "${SYNC_COMMIT_MSG}"
     - git push --set-upstream origin ${SYNC_BRANCH_NAME}
     - git status
@@ -104,9 +125,9 @@ build_idf_v4.2:
 
 sync_from_github:on-schedule:
   stage: sync
-  image: espressif/idf:release-v5.0
+  image: espressif/idf:release-v5.2
   tags:
-    - sync
+    - github_sync
   rules:
     - if: '$CI_PIPELINE_SOURCE == "schedule" && $CI_COMMIT_BRANCH == "master"'
   script:
@@ -135,5 +156,5 @@ push_to_github:
     - chmod 600 ~/.ssh/id_rsa
     - echo -e "Host github.com\n\tStrictHostKeyChecking no\n" >> ~/.ssh/config
     - git remote remove github &>/dev/null || true
-    - git remote add github git@github.com:espressif/tflite-micro-esp-examples.git
+    - git remote add github git@github.com:espressif/esp-tflite-micro.git
     - git push github "${CI_COMMIT_SHA}:refs/heads/${CI_COMMIT_REF_NAME}"
